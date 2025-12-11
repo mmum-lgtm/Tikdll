@@ -6,6 +6,13 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-}
+  experimental: {
+    outputFileTracingExcludes: ['**canvas**'],
+  },
+  webpack: (config) => {
+    config.externals = [...(config.externals || []), 'canvas', 'jsdom'];
+    return config;
+  },
+};
 
-export default nextConfig
+export default nextConfig;
