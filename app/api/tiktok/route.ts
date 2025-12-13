@@ -202,6 +202,198 @@ async function tiktok(url: string) {
   return { title, creator, thumbnail, videos, audio, slide }
 }
 
+async function ssstik(url: string) {
+  if (!tiktokRegex.test(url)) {
+    throw new Error("Invalid URL")
+  }
+
+  const userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36";
+
+  // Get session and tt token
+  const sesRes = await fetch("https://ssstik.io", {
+    headers: {
+      "user-agent": userAgent,
+    },
+  });
+  if (!sesRes.ok) {
+    throw new Error(`Failed to get ssstik page: ${sesRes.status}`);
+  }
+  const sesHtml = await sesRes.text();
+  const ttMatch = /tt:'([\w\d]+)'/.exec(sesHtml);
+  if (!ttMatch) {
+    throw new Error("Could not find tt token in ssstik page");
+  }
+  const tt = ttMatch[1];
+
+  const form = new URLSearchParams();
+  form.append("id", url);
+  form.append("locale", "id"); // Use 'id' for Indonesian, or 'en' for English
+  form.append("tt", tt);
+
+  const res = await fetch("https://ssstik.io/abc?url=dl", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "https://ssstik.io",
+      referer: "https://ssstik.io/",
+      "user-agent": userAgent,
+    },
+    body: form.toString(),
+  });
+  if (!res.ok) {
+    throw new Error(`ssstik returned ${res.status}: ${res.statusText}`);
+  }
+  const html = await res.text();
+
+  // Extract title/description
+  let title = "";
+  const descPatterns = [
+    /<h2[^>]*>([\s\S]*?)<\/h2>/i,
+    /<p[^>]*>([\s\S]*?)<\/p>/i,
+    /<div[^>]*id\s*=\s*["']mainresult["'][^>]*>([\s\S]*?)<\/div>/i,
+    /<span[^>]*class\s*=\s*["']result-overlay["'][^>]*>([\s\S]*?)<\/span>/i,
+  ];
+  for (const pattern of descPatterns) {
+    const match = pattern.exec(html);
+    if (match && match[1]) {
+      title = match[1].replace(/<[^>]+>/g, "").trim();
+      if (title.length > 0) break;
+    }
+  }
+
+  // Extract creator
+  let creator = "";
+  const creatorMatch = /@([\w\d_.]+)/i.exec(html);
+  if (creatorMatch) {
+    creator = creatorMatch[1];
+  }
+
+  // Extract thumbnail
+  let thumbnail = "";
+  const thumbMatch = /<img[^>]*src="([^"]+)"[^>]*class\s*=\s*["']pure-img["']/i.exec(html) || /<img[^>]*src="([^"]+)"/i.exec(html);
+  if (thumbMatch) {
+    thumbnail = thumbMatch[1];
+  }
+
+  // Extract videos and audio
+  let videos: string[] = [];
+  let audio = "";
+
+  const hrefRegex = /href="([^"]+)"/g;
+  const hrefs: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = hrefRegex.exec(html))) {
+    hrefs.push(m[1]);
+  }
+
+  // Process hrefs for possible base64 encoding
+  const processedHrefs = hrefs.map((h) => {
+    if (h.includes("ssscdn.io")) {
+      const parts = h.split("/");
+      if (parts.length > 5) {
+        const toDecode = parts.slice(5).join("/");
+        try {
+          return atob(toDecode);
+        } catch {
+          return h;
+        }
+      }
+    }
+    return h;
+  });
+
+  const videoUrls = processedHrefs.filter((url) =>
+    url.endsWith(".mp4") ||
+    url.includes("video") ||
+    url.includes("download") && !url.includes("mp3") && !url.includes("music")
+  );
+  const audioUrls = processedHrefs.filter((url) =>
+    url.endsWith(".mp3") ||
+    url.includes("mp3") ||
+    url.includes("music")
+  );
+
+  videos = videoUrls.slice(0, 2);
+  if (audioUrls.length > 0) {
+    audio = audioUrls[0];
+  }
+
+  // Extract slides/images
+  const slide: string[] = [];
+  const imgRegex = /<img[^>]*src="([^"]+)"/g;
+  while ((m = imgRegex.exec(html))) {
+    const imgUrl = m[1];
+    if (imgUrl.includes(".jpg") || imgUrl.includes(".png") || imgUrl.includes("photo")) {
+      if (imgUrl !== thumbnail) slide.push(imgUrl);
+    }
+  }
+
+  console.log("=== SSSTIK.IO EXTRACTION DEBUG ===");
+  console.log("Processed hrefs:", processedHrefs);
+  console.log("Video URLs:", videoUrls);
+  console.log("Audio URLs:", audioUrls);
+  console.log("Final videos:", videos);
+  console.log("Final audio:", audio);
+  console.log("Slides:", slide);
+  console.log("===================================");
+
+  return { title, creator, thumbnail, videos, audio, slide };
+}
+
+async function tobyDl(url: string) {
+  if (!tiktokRegex.test(url)) {
+    throw new Error("Invalid URL");
+  }
+
+  const Tiktok = require('@tobyg74/tiktok-api-dl');
+
+  let res;
+  try {
+    res = await Tiktok.Downloader(url, { version: "v1" });
+  } catch (err) {
+    try {
+      res = await Tiktok.Downloader(url, { version: "v2" });
+    } catch (err) {
+      res = await Tiktok.Downloader(url, { version: "v3" });
+    }
+  }
+
+  if (res.status !== "success") {
+    throw new Error("Toby DL failed: " + res.message);
+  }
+
+  // Parsing assuming common structure - adjust based on actual response by console.logging res
+  const result = res.result;
+  const title = result.desc || result.description || "";
+  const creator = result.author?.uniqueId || result.author?.nickname || "";
+  const thumbnail = result.cover || result.dynamicCover || "";
+  let videos: string[] = [];
+  let audio = "";
+  let slide: string[] = [];
+
+  if (result.type === "video") {
+    // May have video, video_no_watermark, etc.
+    if (result.video) videos.push(result.video);
+    if (result.video_no_watermark) videos.push(result.video_no_watermark);
+    audio = result.music || "";
+  } else if (result.type === "image" || result.type === "slideshow") {
+    slide = result.images || [];
+    audio = result.music || "";
+  }
+
+  console.log("=== TOBY DL DEBUG ===");
+  console.log("Full response:", res);
+  console.log("Parsed title:", title);
+  console.log("Parsed creator:", creator);
+  console.log("Parsed thumbnail:", thumbnail);
+  console.log("Parsed videos:", videos);
+  console.log("Parsed audio:", audio);
+  console.log("Parsed slide:", slide);
+  console.log("===================================");
+
+  return { title, creator, thumbnail, videos, audio, slide };
+}
+
 export async function POST(req: Request) {
   try {
     const { url } = await req.json()
@@ -210,12 +402,34 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid TikTok URL" }, { status: 400 })
     }
 
-    let result: any
+    let result: any;
     try {
-      result = await tiktok(url)
+      result = await tiktok(url);
+      // Check if media was extracted successfully
+      if (result.videos.length === 0 && result.slide.length === 0) {
+        throw new Error("No media found from TikSave");
+      }
     } catch (err: any) {
-      const message = err?.message || String(err)
-      return NextResponse.json({ error: message }, { status: 500 })
+      console.error("TikSave failed:", err.message);
+      // Fallback to ssstik
+      try {
+        result = await ssstik(url);
+        if (result.videos.length === 0 && result.slide.length === 0) {
+          throw new Error("No media found from ssstik");
+        }
+      } catch (fallbackErr: any) {
+        console.error("ssstik fallback failed:", fallbackErr.message);
+        // Second fallback to tobyDl
+        try {
+          result = await tobyDl(url);
+          if (result.videos.length === 0 && result.slide.length === 0) {
+            throw new Error("No media found from tobyDl");
+          }
+        } catch (secondFallbackErr: any) {
+          console.error("tobyDl second fallback failed:", secondFallbackErr.message);
+          return NextResponse.json({ error: `All services failed: ${secondFallbackErr.message}` }, { status: 500 });
+        }
+      }
     }
 
     const images: string[] = Array.isArray(result.slide) ? result.slide : []
@@ -234,7 +448,7 @@ export async function POST(req: Request) {
     
     if (!isPhoto) {
       if (videos.length === 0) {
-        return NextResponse.json({ error: "No video URLs found in the TikSave response" }, { status: 500 })
+        return NextResponse.json({ error: "No video URLs found" }, { status: 500 })
       }
       
       response.videos = videos
